@@ -2,282 +2,451 @@ package config
 
 import (
 	"fmt"
-	"io/ioutil"
-	"os"
-	"regexp"
 	"testing"
 
-	"github.com/zricethezav/gitleaks/v7/options"
+	"github.com/google/go-cmp/cmp"
+	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/zricethezav/gitleaks/v8/regexp"
 )
 
-func TestParse(t *testing.T) {
+const configPath = "../testdata/config/"
+
+func TestTranslate(t *testing.T) {
 	tests := []struct {
-		description   string
-		opts          options.Options
-		wantErr       error
-		wantFileRegex *regexp.Regexp
-		wantMessages  *regexp.Regexp
-		wantAllowlist AllowList
+		// Configuration file basename to load, from `../testdata/config/`.
+		cfgName string
+		// Expected result.
+		cfg Config
+		// Rules to compare.
+		rules []string
+		// Error to expect.
+		wantError error
 	}{
 		{
-			description: "default config",
-			opts:        options.Options{},
-		},
-		{
-			description: "test successful load",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/aws_key.toml",
+			cfgName: "allowlist_old_compat",
+			cfg: Config{
+				Rules: map[string]Rule{"example": {
+					RuleID:   "example",
+					Regex:    regexp.MustCompile(`example\d+`),
+					Tags:     []string{},
+					Keywords: []string{},
+					Allowlists: []Allowlist{
+						{
+							MatchCondition: AllowlistMatchOr,
+							Regexes:        []*regexp.Regexp{regexp.MustCompile("123")},
+						},
+					},
+				}},
 			},
 		},
 		{
-			description: "test bad toml",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_aws_key.toml",
-			},
-			wantErr: fmt.Errorf("Near line 7 (last key parsed 'rules.description'): expected value but found \"AWS\" instead"),
+			cfgName:   "allowlist_invalid_empty",
+			cfg:       Config{},
+			wantError: fmt.Errorf("example: [[rules.allowlists]] must contain at least one check for: commits, paths, regexes, or stopwords"),
 		},
 		{
-			description: "test bad regex",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_regex_aws_key.toml",
-			},
-			wantErr: fmt.Errorf("problem loading config: error parsing regexp: invalid nested repetition operator: `???`"),
+			cfgName:   "allowlist_invalid_old_and_new",
+			cfg:       Config{},
+			wantError: fmt.Errorf("example: [rules.allowlist] is deprecated, it cannot be used alongside [[rules.allowlist]]"),
 		},
 		{
-			description: "test bad global allowlist file regex",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_aws_key_global_allowlist_file.toml",
-			},
-			wantErr: fmt.Errorf("problem loading config: error parsing regexp: missing argument to repetition operator: `??`"),
+			cfgName:   "allowlist_invalid_regextarget",
+			cfg:       Config{},
+			wantError: fmt.Errorf("example: unknown allowlist |regexTarget| 'mtach' (expected 'match', 'line')"),
 		},
 		{
-			description: "test bad global file regex",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_aws_key_file_regex.toml",
-			},
-			wantErr: fmt.Errorf("problem loading config: error parsing regexp: missing argument to repetition operator: `??`"),
-		},
-		{
-			description: "test successful load big ol thing",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/large.toml",
-			},
-		},
-		{
-			description: "test load entropy",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/entropy.toml",
+			cfgName: "allow_aws_re",
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS"},
+					Allowlists: []Allowlist{
+						{
+							MatchCondition: AllowlistMatchOr,
+							Regexes:        []*regexp.Regexp{regexp.MustCompile("AKIALALEMEL33243OLIA")},
+						},
+					},
+				}},
 			},
 		},
 		{
-			description: "test entropy bad range",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_entropy_1.toml",
+			cfgName: "allow_commit",
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS"},
+					Allowlists: []Allowlist{
+						{
+							MatchCondition: AllowlistMatchOr,
+							Commits:        []string{"allowthiscommit"},
+						},
+					},
+				}},
 			},
-			wantErr: fmt.Errorf("problem loading config: entropy Min value cannot be higher than Max value"),
 		},
 		{
-			description: "test entropy value max",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_entropy_2.toml",
+			cfgName: "allow_path",
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS"},
+					Allowlists: []Allowlist{
+						{
+							MatchCondition: AllowlistMatchOr,
+							Paths:          []*regexp.Regexp{regexp.MustCompile(".go")},
+						},
+					},
+				}},
 			},
-			wantErr: fmt.Errorf("strconv.ParseFloat: parsing \"x\": invalid syntax"),
 		},
 		{
-			description: "test entropy value min",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_entropy_3.toml",
+			cfgName: "entropy_group",
+			cfg: Config{
+				Rules: map[string]Rule{"discord-api-key": {
+					RuleID:      "discord-api-key",
+					Description: "Discord API key",
+					Regex:       regexp.MustCompile(`(?i)(discord[a-z0-9_ .\-,]{0,25})(=|>|:=|\|\|:|<=|=>|:).{0,5}['\"]([a-h0-9]{64})['\"]`),
+					Entropy:     3.5,
+					SecretGroup: 3,
+					Keywords:    []string{},
+					Tags:        []string{},
+				}},
 			},
-			wantErr: fmt.Errorf("strconv.ParseFloat: parsing \"x\": invalid syntax"),
 		},
 		{
-			description: "test entropy value group",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_entropy_4.toml",
-			},
-			wantErr: fmt.Errorf("strconv.ParseInt: parsing \"x\": invalid syntax"),
+			cfgName:   "missing_id",
+			cfg:       Config{},
+			wantError: fmt.Errorf("rule |id| is missing or empty, regex: (?i)(discord[a-z0-9_ .\\-,]{0,25})(=|>|:=|\\|\\|:|<=|=>|:).{0,5}['\\\"]([a-h0-9]{64})['\\\"]"),
 		},
 		{
-			description: "test entropy value group",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_entropy_5.toml",
-			},
-			wantErr: fmt.Errorf("problem loading config: group cannot be lower than 0"),
+			cfgName:   "no_regex_or_path",
+			cfg:       Config{},
+			wantError: fmt.Errorf("discord-api-key: both |regex| and |path| are empty, this rule will have no effect"),
 		},
 		{
-			description: "test entropy value group",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_entropy_6.toml",
-			},
-			wantErr: fmt.Errorf("problem loading config: group cannot be higher than number of groups in regexp"),
+			cfgName:   "bad_entropy_group",
+			cfg:       Config{},
+			wantError: fmt.Errorf("discord-api-key: invalid regex secret group 5, max regex secret group 3"),
 		},
 		{
-			description: "test entropy range limits",
-			opts: options.Options{
-				ConfigPath: "../test_data/test_configs/bad_entropy_7.toml",
+			cfgName: "base",
+			cfg: Config{
+				Rules: map[string]Rule{
+					"aws-access-key": {
+						RuleID:      "aws-access-key",
+						Description: "AWS Access Key",
+						Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+						Keywords:    []string{},
+						Tags:        []string{"key", "AWS"},
+					},
+					"aws-secret-key": {
+						RuleID:      "aws-secret-key",
+						Description: "AWS Secret Key",
+						Regex:       regexp.MustCompile(`(?i)aws_(.{0,20})?=?.[\'\"0-9a-zA-Z\/+]{40}`),
+						Keywords:    []string{},
+						Tags:        []string{"key", "AWS"},
+					},
+					"aws-secret-key-again": {
+						RuleID:      "aws-secret-key-again",
+						Description: "AWS Secret Key",
+						Regex:       regexp.MustCompile(`(?i)aws_(.{0,20})?=?.[\'\"0-9a-zA-Z\/+]{40}`),
+						Keywords:    []string{},
+						Tags:        []string{"key", "AWS"},
+					},
+				},
 			},
-			wantErr: fmt.Errorf("problem loading config: invalid entropy ranges, must be within 0.0-8.0"),
+		},
+		{
+			cfgName: "extend_rule_allowlist_or",
+			cfg: Config{
+				Rules: map[string]Rule{
+					"aws-secret-key-again-again": {
+						RuleID:      "aws-secret-key-again-again",
+						Description: "AWS Secret Key",
+						Regex:       regexp.MustCompile(`(?i)aws_(.{0,20})?=?.[\'\"0-9a-zA-Z\/+]{40}`),
+						Keywords:    []string{},
+						Tags:        []string{"key", "AWS"},
+						Allowlists: []Allowlist{
+							{
+								MatchCondition: AllowlistMatchOr,
+								StopWords:      []string{"fake"},
+							},
+							{
+								MatchCondition: AllowlistMatchOr,
+								Commits:        []string{"abcdefg1"},
+								Paths:          []*regexp.Regexp{regexp.MustCompile(`ignore\.xaml`)},
+								Regexes:        []*regexp.Regexp{regexp.MustCompile(`foo.+bar`)},
+								RegexTarget:    "line",
+								StopWords:      []string{"example"},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			cfgName: "extend_rule_allowlist_and",
+			cfg: Config{
+				Rules: map[string]Rule{
+					"aws-secret-key-again-again": {
+						RuleID:      "aws-secret-key-again-again",
+						Description: "AWS Secret Key",
+						Regex:       regexp.MustCompile(`(?i)aws_(.{0,20})?=?.[\'\"0-9a-zA-Z\/+]{40}`),
+						Keywords:    []string{},
+						Tags:        []string{"key", "AWS"},
+						Allowlists: []Allowlist{
+							{
+								MatchCondition: AllowlistMatchOr,
+								StopWords:      []string{"fake"},
+							},
+							{
+								MatchCondition: AllowlistMatchAnd,
+								Commits:        []string{"abcdefg1"},
+								Paths:          []*regexp.Regexp{regexp.MustCompile(`ignore\.xaml`)},
+								Regexes:        []*regexp.Regexp{regexp.MustCompile(`foo.+bar`)},
+								RegexTarget:    "line",
+								StopWords:      []string{"example"},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			cfgName: "extend_empty_regexpath",
+			cfg: Config{
+				Rules: map[string]Rule{
+					"aws-secret-key-again-again": {
+						RuleID:      "aws-secret-key-again-again",
+						Description: "AWS Secret Key",
+						Regex:       regexp.MustCompile(`(?i)aws_(.{0,20})?=?.[\'\"0-9a-zA-Z\/+]{40}`),
+						Keywords:    []string{},
+						Tags:        []string{"key", "AWS"},
+						Allowlists: []Allowlist{
+							{
+								MatchCondition: AllowlistMatchOr,
+								Paths:          []*regexp.Regexp{regexp.MustCompile(`something.py`)},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			cfgName: "override_description",
+			rules:   []string{"aws-access-key"},
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "Puppy Doggy",
+					Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS"},
+				},
+				},
+			},
+		},
+		{
+			cfgName: "override_entropy",
+			rules:   []string{"aws-access-key"},
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+					Entropy:     999.0,
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS"},
+				},
+				},
+			},
+		},
+		{
+			cfgName: "override_secret_group",
+			rules:   []string{"aws-access-key"},
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:a)(?:a)"),
+					SecretGroup: 2,
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS"},
+				},
+				},
+			},
+		},
+		{
+			cfgName: "override_regex",
+			rules:   []string{"aws-access-key"},
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:a)"),
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS"},
+				},
+				},
+			},
+		},
+		{
+			cfgName: "override_path",
+			rules:   []string{"aws-access-key"},
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+					Path:        regexp.MustCompile("(?:puppy)"),
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS"},
+				},
+				},
+			},
+		},
+		{
+			cfgName: "override_tags",
+			rules:   []string{"aws-access-key"},
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+					Keywords:    []string{},
+					Tags:        []string{"key", "AWS", "puppy"},
+				},
+				},
+			},
+		},
+		{
+			cfgName: "override_keywords",
+			rules:   []string{"aws-access-key"},
+			cfg: Config{
+				Rules: map[string]Rule{"aws-access-key": {
+					RuleID:      "aws-access-key",
+					Description: "AWS Access Key",
+					Regex:       regexp.MustCompile("(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"),
+					Keywords:    []string{"puppy"},
+					Tags:        []string{"key", "AWS"},
+				},
+				},
+			},
+		},
+		{
+			cfgName: "extend_disabled",
+			cfg: Config{
+				Rules: map[string]Rule{
+					"aws-secret-key": {
+						RuleID:   "aws-secret-key",
+						Regex:    regexp.MustCompile(`(?i)aws_(.{0,20})?=?.[\'\"0-9a-zA-Z\/+]{40}`),
+						Tags:     []string{"key", "AWS"},
+						Keywords: []string{},
+					},
+					"pypi-upload-token": {
+						RuleID:   "pypi-upload-token",
+						Regex:    regexp.MustCompile(`pypi-AgEIcHlwaS5vcmc[A-Za-z0-9\-_]{50,1000}`),
+						Tags:     []string{},
+						Keywords: []string{},
+					},
+				},
+			},
 		},
 	}
 
-	for _, test := range tests {
-		_, err := NewConfig(test.opts)
-		if err != nil {
-			if test.wantErr == nil {
-				t.Error(test.description, err)
-			} else if test.wantErr.Error() != err.Error() {
-				t.Errorf("expected err: %s, got %s", test.wantErr, err)
+	for _, tt := range tests {
+		t.Run(tt.cfgName, func(t *testing.T) {
+			t.Cleanup(func() {
+				extendDepth = 0
+				viper.Reset()
+			})
+
+			viper.AddConfigPath(configPath)
+			viper.SetConfigName(tt.cfgName)
+			viper.SetConfigType("toml")
+			err := viper.ReadInConfig()
+			require.NoError(t, err)
+
+			var vc ViperConfig
+			err = viper.Unmarshal(&vc)
+			require.NoError(t, err)
+			cfg, err := vc.Translate()
+			if err != nil && !assert.EqualError(t, tt.wantError, err.Error()) {
+				return
 			}
-		}
+
+			if len(tt.rules) > 0 {
+				rules := make(map[string]Rule)
+				for _, name := range tt.rules {
+					rules[name] = cfg.Rules[name]
+				}
+				cfg.Rules = rules
+			}
+
+			var regexComparer = func(x, y *regexp.Regexp) bool {
+				if x == nil || y == nil {
+					return x == y
+				}
+				return x.String() == y.String()
+			}
+			opts := cmp.Options{cmp.Comparer(regexComparer)}
+			if diff := cmp.Diff(tt.cfg.Rules, cfg.Rules, opts); diff != "" {
+				t.Errorf("%s diff: (-want +got)\n%s", tt.cfgName, diff)
+			}
+		})
 	}
 }
 
-// TestParseFields will test that fields are properly parsed from a config. As fields are added, then please
-// add tests here.
-func TestParseFields(t *testing.T) {
-	tomlConfig := `
-[[rules]]
-	description = "Some Groups without a reportGroup"
-	regex = '(.)(.)'
-
-[[rules]]
-	description = "Some Groups"
-	regex = '(.)(.)'
-  reportGroup = 1
-`
-	configPath, err := writeTestConfig(tomlConfig)
-	defer os.Remove(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	config, err := NewConfig(options.Options{ConfigPath: configPath})
-	if err != nil {
-		t.Fatalf("Couldn't parse config: %v", err)
-	}
-
-	expectedRuleFields := []struct {
-		Description string
-		ReportGroup int
+func TestExtendedRuleKeywordsAreDowncase(t *testing.T) {
+	tests := []struct {
+		name             string
+		cfgName          string
+		expectedKeywords string
 	}{
 		{
-			Description: "Some Groups without a reportGroup",
-			ReportGroup: 0,
+			name:             "Extend base rule that includes AWS keyword with new attribute",
+			cfgName:          "extend_base_rule_including_keysword_with_attribute",
+			expectedKeywords: "aws",
 		},
 		{
-			Description: "Some Groups",
-			ReportGroup: 1,
+			name:             "Extend base with a new rule with CMS keyword",
+			cfgName:          "extend_with_new_rule",
+			expectedKeywords: "cms",
 		},
 	}
 
-	if len(config.Rules) != len(expectedRuleFields) {
-		t.Fatalf("expected %v rules", len(expectedRuleFields))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Cleanup(func() {
+				viper.Reset()
+			})
+
+			viper.AddConfigPath(configPath)
+			viper.SetConfigName(tt.cfgName)
+			viper.SetConfigType("toml")
+			err := viper.ReadInConfig()
+			require.NoError(t, err)
+
+			var vc ViperConfig
+			err = viper.Unmarshal(&vc)
+			require.NoError(t, err)
+			cfg, err := vc.Translate()
+			require.NoError(t, err)
+
+			_, exists := cfg.Keywords[tt.expectedKeywords]
+			require.Truef(t, exists, "The expected keyword %s did not exist as a key of cfg.Keywords", tt.expectedKeywords)
+		})
 	}
-
-	for _, expected := range expectedRuleFields {
-		rule, err := findRuleByDescription(config.Rules, expected.Description)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if rule.ReportGroup != expected.ReportGroup {
-			t.Errorf("expected the rule with description '%v' to have a ReportGroup of %v", expected.Description, expected.ReportGroup)
-		}
-	}
-}
-
-func findRuleByDescription(rules []Rule, description string) (*Rule, error) {
-	for _, rule := range rules {
-		if rule.Description == description {
-			return &rule, nil
-		}
-	}
-
-	return nil, fmt.Errorf("Couldn't find rule with the description: %s", description)
-}
-
-func writeTestConfig(toml string) (string, error) {
-	tmpfile, err := ioutil.TempFile("", "testConfig")
-	if err != nil {
-		return "", fmt.Errorf("Couldn't create test config got: %w", err)
-	}
-
-	if _, err := tmpfile.Write([]byte(toml)); err != nil {
-		return "", fmt.Errorf("Couldn't create test config got: %w", err)
-	}
-
-	if err := tmpfile.Close(); err != nil {
-		return "", fmt.Errorf("Couldn't create test config got: %w", err)
-	}
-
-	return tmpfile.Name(), nil
-}
-
-func TestAppendingConfiguration(t *testing.T) {
-	testRegexA, _ := regexp.Compile("a")
-	testRegexB, _ := regexp.Compile("b")
-
-	allowListA := AllowList{
-		Description: "Test Description",
-		Commits:     []string{"a"},
-		Files:       []*regexp.Regexp{testRegexA},
-		Paths:       []*regexp.Regexp{testRegexA},
-		Regexes:     []*regexp.Regexp{testRegexA},
-		Repos:       []*regexp.Regexp{testRegexA},
-	}
-
-	allowListB := AllowList{
-		Description: "Test Description",
-		Commits:     []string{"b"},
-		Files:       []*regexp.Regexp{testRegexB},
-		Paths:       []*regexp.Regexp{testRegexB},
-		Regexes:     []*regexp.Regexp{testRegexB},
-		Repos:       []*regexp.Regexp{testRegexB},
-	}
-
-	ruleA := Rule{Description: "a"}
-	ruleB := Rule{Description: "b"}
-
-	rulesA := []Rule{ruleA}
-	rulesB := []Rule{ruleB}
-
-	cfgA := Config{
-		Rules:     rulesA,
-		Allowlist: allowListA,
-	}
-
-	cfgB := Config{
-		Rules:     rulesB,
-		Allowlist: allowListB,
-	}
-
-	cfgAppended := cfgA.AppendConfig(cfgB)
-
-	if !(len(cfgAppended.Rules) == 2) {
-		t.Errorf("Length of Appended Rules = %d; want 2", len(cfgAppended.Rules))
-	}
-
-	if !(len(cfgAppended.Allowlist.Commits) == 2) {
-		t.Errorf("Length of Appended Allowed Commits = %d; want 2", len(cfgAppended.Allowlist.Commits))
-	}
-
-	if !(len(cfgAppended.Allowlist.Files) == 2) {
-		t.Errorf("Length of Appended Allowed Files = %d; want 2", len(cfgAppended.Allowlist.Files))
-	}
-
-	if !(len(cfgAppended.Allowlist.Paths) == 2) {
-		t.Errorf("Length of Appended Allowed Paths = %d; want 2", len(cfgAppended.Allowlist.Paths))
-	}
-
-	if !(len(cfgAppended.Allowlist.Regexes) == 2) {
-		t.Errorf("Length of Appended Allowed Regexes = %d; want 2", len(cfgAppended.Allowlist.Regexes))
-	}
-
-	if !(len(cfgAppended.Allowlist.Repos) == 2) {
-		t.Errorf("Length of Appended Allowed Repos = %d; want 2", len(cfgAppended.Allowlist.Repos))
-	}
-
-	if cfgAppended.Allowlist.Description != "Appended Configuration" {
-		t.Errorf("Allow List Description is = \"%s\"; want \"Appended Configuration\"", cfgAppended.Allowlist.Description)
-	}
-
 }
